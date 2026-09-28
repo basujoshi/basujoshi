@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Customer Portal • KhataPro</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+.portal-flow{display:grid;gap:18px}.step-card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:24px;box-shadow:var(--shadow)}
+.step-card h2{margin:0 0 8px}.step-note{color:var(--muted);margin:0 0 18px}.shop-list{display:grid;gap:10px}.shop-choice{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:1px solid var(--line);background:#fff;border-radius:16px;padding:13px}.shop-choice:hover{border-color:var(--primary);background:#f7f9ff}.shop-choice img,.shop-avatar{width:52px;height:52px;border-radius:14px;object-fit:cover}.shop-avatar{display:grid;place-items:center;background:#edf2ff;font-size:25px}.shop-choice strong{flex:1}.pinbox{display:grid;gap:12px}.pin-input{letter-spacing:.35em;text-align:center;font-size:25px;font-weight:800}.top-account{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.notif-btn{position:relative;border:0;background:#eef2ff;border-radius:13px;padding:10px 14px;font-weight:800;color:#2948b9}.notif-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:99px;background:#e5484d;color:#fff;font-size:12px;margin-left:5px}.notif-panel{margin-top:14px;border:1px solid var(--line);border-radius:16px;padding:12px;background:#f8fafc}.notif-item{padding:13px;border-radius:13px;background:#fff;border:1px solid var(--line);margin:8px 0}.notif-item.unread{border-color:#3157e8}.notif-item .ntop{display:flex;justify-content:space-between;gap:10px}.hidden{display:none!important}
+</style>
+</head>
+<body class="customer-bg">
+<header class="customer-nav"><a href="index.html" class="portal-brand">K <span data-i18n="account">My Account</span></a><select id="languageSelect" class="lang"><option value="en">English</option><option value="ne">नेपाली</option></select></header>
+<main class="wrap narrow">
+<section class="customer-hero">
+<div class="portal-icon">🔐</div><span class="portal-badge" data-i18n="secure">Private & secure access</span>
+<h1 data-i18n="customerPortalTitle">Secure Customer Portal</h1>
+<p class="hint">Enter mobile number first. Then select your shop and enter your 6-digit PIN.</p>
+</section>
+
+<section id="stepMobile" class="step-card">
+<h2>1. Mobile number</h2><p class="step-note">Your mobile number is used only to find shops linked to your customer account.</p>
+<form id="mobileForm" class="portal-form">
+<label><span data-i18n="mobile">Mobile number</span><input id="mobile" required inputmode="tel" autocomplete="tel" placeholder="98XXXXXXXX"></label>
+<button class="primary" type="submit">Continue</button>
+</form>
+</section>
+
+<section id="stepShop" class="step-card hidden">
+<h2>2. Select shop</h2><p class="step-note">Select the shop whose account you want to open.</p>
+<div id="shopList" class="shop-list"></div>
+<button id="backMobile" class="ghost" type="button" style="margin-top:12px">← Change mobile</button>
+</section>
+
+<section id="stepPin" class="step-card hidden">
+<h2>3. Enter PIN</h2><p id="selectedShopText" class="step-note"></p>
+<form id="pinForm" class="pinbox">
+<input id="pin" class="pin-input" required inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="off" placeholder="••••••">
+<button class="primary" type="submit">Open Account</button>
+<button id="backShop" class="ghost" type="button">← Back to shops</button>
+</form>
+</section>
+
+<section id="status" class="portal-result"></section>
+<section id="accountView" class="hidden portal-result"></section>
+</main>
+
+<script type="module">
+import {db,cleanMobile} from './js/firebase-config.js';
+import {ref,get,onValue,update} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js';
+import {initLanguage,t,money,esc,hashText} from './js/common.js';
+initLanguage();
+
+const mobileForm=document.querySelector('#mobileForm');
+const stepMobile=document.querySelector('#stepMobile'),stepShop=document.querySelector('#stepShop'),stepPin=document.querySelector('#stepPin');
+const shopList=document.querySelector('#shopList'),status=document.querySelector('#status'),accountView=document.querySelector('#accountView');
+const mobileInput=document.querySelector('#mobile'),pinInput=document.querySelector('#pin');
+let mobile='',shops={},selectedUid='',selectedShop=null,activePath='',stopLive=null;
+
+function showError(msg){status.innerHTML='<div class="result-error"><b>'+esc(msg)+'</b></div>';status.classList.remove('hidden')}
+function clearStatus(){status.innerHTML='';status.classList.add('hidden')}
+function resetToMobile(){if(stopLive)stopLive();mobile='';shops={};selectedUid='';selectedShop=null;stepMobile.classList.remove('hidden');stepShop.classList.add('hidden');stepPin.classList.add('hidden');accountView.classList.add('hidden');clearStatus();mobileInput.focus()}
+function formatDateTime(ts,date){const d=ts?new Date(ts):new Date((date||new Date().toISOString().slice(0,10))+'T00:00:00');return d.toLocaleString(localStorage.getItem('khata_lang')==='ne'?'ne-NP':'en-IN',{dateStyle:'short',timeStyle:'short',hour12:true})}
+
+mobileForm.onsubmit=async e=>{
+ e.preventDefault(); clearStatus();
+ mobile=cleanMobile(mobileInput.value);
+ if(mobile.length<7){showError('Enter a valid mobile number.');return}
+ status.innerHTML='<div class="panel">Checking shops…</div>';status.classList.remove('hidden');
+ try{
+   const mh=await hashText(mobile);
+   const data=(await get(ref(db,`customerIndex/${mh}`))).val()||{};
+   shops=Object.fromEntries(Object.entries(data).filter(([,x])=>x&&x.enabled!==false));
+   if(!Object.keys(shops).length){showError('No shop is registered with this mobile number.');return}
+   shopList.innerHTML=Object.entries(shops).map(([uid,x])=>`
+    <button class="shop-choice" type="button" data-uid="${esc(uid)}">
+      ${x.shopPhoto?`<img src="${esc(x.shopPhoto)}" alt="">`:`<span class="shop-avatar">🏪</span>`}
+      <strong>${esc(x.shopName||'Shop')}</strong><span>›</span>
+    </button>`).join('');
+   stepMobile.classList.add('hidden');stepShop.classList.remove('hidden');status.classList.add('hidden');
+   document.querySelectorAll('.shop-choice').forEach(b=>b.onclick=()=>{
+     selectedUid=b.dataset.uid;selectedShop=shops[selectedUid]||{};
+     document.querySelector('#selectedShopText').textContent=(selectedShop.shopName||'Shop')+' — enter your private 6-digit PIN.';
+     stepShop.classList.add('hidden');stepPin.classList.remove('hidden');pinInput.value='';pinInput.focus();
+   });
+ }catch(err){showError('Unable to connect to the customer service. Please try again.');console.error(err)}
+};
+
+document.querySelector('#backMobile').onclick=resetToMobile;
+document.querySelector('#backShop').onclick=()=>{stepPin.classList.add('hidden');stepShop.classList.remove('hidden');pinInput.value=''};
+
+document.querySelector('#pinForm').onsubmit=async e=>{
+ e.preventDefault();clearStatus();
+ const pin=pinInput.value.trim();
+ if(!/^[0-9]{6}$/.test(pin)){showError('Enter the 6-digit PIN.');return}
+ status.innerHTML='<div class="panel">Verifying PIN…</div>';status.classList.remove('hidden');
+ try{
+   const accessKey=await hashText(mobile+'|'+pin);
+   const node=`customerAccess/${accessKey}/shops/${selectedUid}`;
+   const data=(await get(ref(db,node))).val();
+   if(!data||!data.account||cleanMobile(data.account.mobile)!==mobile){showError('Incorrect PIN or account not found.');return}
+   if(stopLive)stopLive();
+   activePath=node;
+   stopLive=onValue(ref(db,node),snap=>renderAccount(snap.val(),accessKey));
+   stepPin.classList.add('hidden');accountView.classList.remove('hidden');status.classList.add('hidden');
+ }catch(err){showError('Unable to open this account. Please try again.');console.error(err)}
+};
+
+function renderAccount(shopData,accessKey){
+ if(!shopData||!shopData.account){showError('Account data is unavailable.');return}
+ const customer=shopData.account;
+ const tx=customer.transactions||{};let total=0,paid=0,rows='';
+ Object.values(tx).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0)).forEach(x=>{
+   if(x.type==='credit')total+=Number(x.amount)||0;else paid+=Number(x.amount)||0;
+   const qty=Number(x.qty)||1,unit=x.unit||'pcs';let qtyDisplay=x.qtyDisplay||((unit==='gm'&&qty>=1000)?((qty/1000)%1===0?(qty/1000):(qty/1000).toFixed(3).replace(/0+$/,'').replace(/\.$/,''))+' kg':unit==='gm'?qty+' gm':unit==='kg'?qty+' kg':qty+' pcs');const mrp=x.type==='credit'?(Number(x.mrp)||((Number(x.amount)||0)/(unit==='gm'?qty/1000:qty))):0;
+   rows+=`<tr><td>${esc(formatDateTime(x.createdAt,x.date))}</td><td>${esc(x.item||'Payment')}</td><td>${x.type==='credit'?money(mrp):'—'}</td><td>${x.type==='credit'?esc(qtyDisplay):'—'}</td><td class="${x.type==='credit'?'credit':'paid'}">${x.type==='credit'?money(x.amount):'-'+money(x.amount)}</td></tr>`;
+ });
+ const notes=Object.entries(shopData.notifications||{}).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+ const unread=notes.filter(([,n])=>n&&n.read!==true).length;
+ const noteHtml=notes.length?notes.map(([id,n])=>`
+  <div class="notif-item ${n.read===true?'':'unread'}">
+   <div class="ntop"><strong>🔔 ${esc(n.title||'Notification')}</strong><small>${esc(formatDateTime(n.createdAt,''))}</small></div>
+   <p>${esc(n.message||'')}</p>
+  </div>`).join(''):'<div class="empty">No notifications yet.</div>';
+ accountView.innerHTML=`
+ <button class="ghost back" id="logoutAccount" type="button">← Back</button>
+ <section class="panel account-box">
+  <div class="top-account">
+   <div class="portal-shop-head"><div class="portal-shop-photo">${shopData.shopPhoto?`<img src="${esc(shopData.shopPhoto)}" alt="">`:'🏪'}</div><div><h1>${esc(shopData.shopName||'Shop')}</h1><p>${esc(customer.name||'')} • ${esc(customer.mobile||'')}</p></div></div>
+   <button id="bellBtn" class="notif-btn" type="button">🔔 Notifications <span class="notif-count">${unread}</span></button>
+  </div>
+  <div id="notifPanel" class="notif-panel hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><strong>Notifications</strong><button id="showNow" class="primary" type="button">Show Now</button></div>
+    ${noteHtml}
+  </div>
+  <div class="stats"><div class="stat"><small>Total Credit</small><strong>${money(total)}</strong></div><div class="stat"><small>Total Paid</small><strong class="green">${money(paid)}</strong></div><div class="stat"><small>Remaining</small><strong class="red">${money(total-paid)}</strong></div></div>
+  <h2>Transaction History</h2>
+  <div class="tablewrap transaction-table"><table><thead><tr><th>Date & Time</th><th>Item</th><th>MRP</th><th>Qty</th><th>Total</th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="empty">No transactions yet.</td></tr>'}</tbody></table></div>
+ </section>`;
+ document.querySelector('#logoutAccount').onclick=resetToMobile;
+ document.querySelector('#bellBtn').onclick=()=>document.querySelector('#notifPanel').classList.toggle('hidden');
+ document.querySelector('#showNow').onclick=async()=>{
+   document.querySelector('#notifPanel').classList.remove('hidden');
+   const updates={};notes.forEach(([id])=>updates[`notifications/${id}/read`]=true);
+   if(notes.length) await update(ref(db,`customerAccess/${accessKey}/shops/${selectedUid}`),updates).catch(()=>{});
+ };
+}
+window.addEventListener('languageChanged',()=>location.reload());
+</script>
+</body></html>
